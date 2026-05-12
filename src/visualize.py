@@ -8,11 +8,11 @@ import plotly.graph_objects as go
 
 
 STATUS_COLOR_MAP = {
-    "A": "#35C759",          # strong
-    "B": "#4A90E2",          # normal
-    "C": "#F5A623",          # review
-    "D": "#D0021B",          # alert
-    "手動上書き": "#8E44AD",  # override
+    "A": "#35C759",
+    "B": "#4A90E2",
+    "C": "#F5A623",
+    "D": "#D0021B",
+    "手動上書き": "#8E44AD",
     "推奨なし": "#8A8A8A",
     "不明": "#8A8A8A",
 }
@@ -198,6 +198,20 @@ def _filter_visual_data(
     return result.reset_index(drop=True)
 
 
+def _rotate_points(points: np.ndarray, angle: float) -> np.ndarray:
+    """
+    Rotate points around the Y axis.
+    """
+    rotation = np.array(
+        [
+            [np.cos(angle), 0, np.sin(angle)],
+            [0, 1, 0],
+            [-np.sin(angle), 0, np.cos(angle)],
+        ]
+    )
+    return points @ rotation.T
+
+
 def build_node_sphere_figure(
     review: pd.DataFrame,
     output: pd.DataFrame,
@@ -252,7 +266,6 @@ def build_node_sphere_figure(
         ),
     )
 
-    # Empty state
     if df.empty:
         fig.add_annotation(
             text="表示対象のノードがありません",
@@ -283,7 +296,6 @@ def build_node_sphere_figure(
     max_qty = max(float(df["推奨数量"].max()), 1.0)
     df["visual_size"] = 7.0 + 22.0 * np.sqrt(df["推奨数量"].clip(lower=0) / max_qty)
 
-    # Center node
     fig.add_trace(
         go.Scatter3d(
             x=[0],
@@ -305,7 +317,6 @@ def build_node_sphere_figure(
         )
     )
 
-    # Category nodes
     for category in categories:
         x, y, z = category_position[category]
         count = int((df["カテゴリ"].astype(str) == category).sum())
@@ -337,7 +348,6 @@ def build_node_sphere_figure(
             )
         )
 
-    # Center -> category lines
     for category in categories:
         x, y, z = category_position[category]
         fig.add_trace(
@@ -352,7 +362,6 @@ def build_node_sphere_figure(
             )
         )
 
-    # Category -> SKU lines
     for row in df.itertuples(index=False):
         category = str(getattr(row, "カテゴリ"))
         cx, cy, cz = category_position.get(category, np.array([0.0, 0.0, 0.0]))
@@ -368,7 +377,6 @@ def build_node_sphere_figure(
             )
         )
 
-    # SKU nodes by status, so legend is clean
     for status, color in STATUS_COLOR_MAP.items():
         status_df = df[df["visual_status"] == status]
         if status_df.empty:
@@ -418,5 +426,305 @@ def build_node_sphere_figure(
                 name=status,
             )
         )
+
+    return fig, df
+
+
+def build_animated_node_sphere_figure(
+    review: pd.DataFrame,
+    output: pd.DataFrame,
+    category_filter: list[str] | None = None,
+    status_filter: list[str] | None = None,
+    quantity_min: int = 0,
+    max_nodes: int = 240,
+    frame_count: int = 36,
+) -> Tuple[go.Figure, pd.DataFrame]:
+    """
+    Build an animated 3D biological/cell-like node sphere.
+
+    Motion concept:
+    - The whole node sphere slowly rotates.
+    - SKU nodes breathe outward/inward.
+    - Each node has slight organic jitter.
+    - Lines pulse faintly.
+    - The result feels like a living cell cluster or neural organism.
+    """
+    merged = _merge_visual_data(review, output)
+    df = _filter_visual_data(
+        merged,
+        category_filter=category_filter,
+        status_filter=status_filter,
+        quantity_min=quantity_min,
+        max_nodes=max_nodes,
+    )
+
+    fig = go.Figure()
+
+    fig.update_layout(
+        paper_bgcolor="#050505",
+        plot_bgcolor="#050505",
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=760,
+        showlegend=True,
+        legend=dict(
+            x=0.02,
+            y=0.98,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#EDEDED", size=11),
+        ),
+        scene=dict(
+            bgcolor="#050505",
+            xaxis=dict(visible=False, showbackground=False),
+            yaxis=dict(visible=False, showbackground=False),
+            zaxis=dict(visible=False, showbackground=False),
+            camera=dict(eye=dict(x=1.45, y=1.45, z=1.12)),
+            aspectmode="cube",
+        ),
+        updatemenus=[
+            {
+                "type": "buttons",
+                "showactive": False,
+                "x": 0.02,
+                "y": 0.04,
+                "buttons": [
+                    {
+                        "label": "Play",
+                        "method": "animate",
+                        "args": [
+                            None,
+                            {
+                                "frame": {"duration": 80, "redraw": True},
+                                "fromcurrent": True,
+                                "transition": {"duration": 0},
+                            },
+                        ],
+                    },
+                    {
+                        "label": "Pause",
+                        "method": "animate",
+                        "args": [
+                            [None],
+                            {
+                                "frame": {"duration": 0, "redraw": False},
+                                "mode": "immediate",
+                                "transition": {"duration": 0},
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+    )
+
+    if df.empty:
+        fig.add_annotation(
+            text="表示対象のノードがありません",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=18, color="#FFFFFF"),
+        )
+        return fig, df
+
+    categories = sorted(df["カテゴリ"].astype(str).fillna("未分類").unique().tolist())
+
+    category_base = fibonacci_sphere(len(categories), radius=4.0)
+    sku_base = fibonacci_sphere(len(df), radius=9.2)
+
+    df["visual_status"] = df.apply(_normalize_status, axis=1)
+    df["visual_color"] = df["visual_status"].map(STATUS_COLOR_MAP).fillna("#8A8A8A")
+
+    df["推奨数量"] = pd.to_numeric(df["推奨数量"], errors="coerce").fillna(0)
+
+    max_qty = max(float(df["推奨数量"].max()), 1.0)
+    df["visual_size"] = 6.0 + 23.0 * np.sqrt(df["推奨数量"].clip(lower=0) / max_qty)
+
+    category_index = {category: i for i, category in enumerate(categories)}
+
+    rng = np.random.default_rng(20260512)
+    phases = rng.uniform(0, 2 * np.pi, len(df))
+
+    jitter_vectors = rng.normal(0, 1, size=(len(df), 3))
+    jitter_norm = np.linalg.norm(jitter_vectors, axis=1, keepdims=True)
+    jitter_norm[jitter_norm == 0] = 1
+    jitter_vectors = jitter_vectors / jitter_norm
+
+    def make_frame_data(frame_i: int):
+        t = 2 * np.pi * frame_i / frame_count
+
+        breath = 1.0 + 0.055 * np.sin(t)
+        angle = t * 0.65
+
+        category_points = _rotate_points(category_base * breath, angle)
+
+        sku_points = sku_base.copy()
+        local_breath = 1.0 + 0.08 * np.sin(t + phases)
+        sku_points = sku_points * local_breath[:, None]
+        sku_points = sku_points + jitter_vectors * (0.18 * np.sin(t * 1.8 + phases))[:, None]
+        sku_points = _rotate_points(sku_points, angle)
+
+        traces = []
+
+        traces.append(
+            go.Scatter3d(
+                x=[0],
+                y=[0],
+                z=[0],
+                mode="markers+text",
+                marker=dict(
+                    size=22 + 3 * np.sin(t),
+                    color="#FFFFFF",
+                    opacity=1,
+                    line=dict(color="#D6D6D6", width=1.5),
+                ),
+                text=["Sales Plan"],
+                textposition="top center",
+                textfont=dict(color="#FFFFFF", size=13),
+                hovertext="Forecast Engine<br>補正需要・販売計画・根拠判定",
+                hoverinfo="text",
+                name="Forecast Engine",
+            )
+        )
+
+        for ci, category in enumerate(categories):
+            x, y, z = category_points[ci]
+            count = int((df["カテゴリ"].astype(str) == category).sum())
+            qty_sum = int(df.loc[df["カテゴリ"].astype(str) == category, "推奨数量"].sum())
+
+            traces.append(
+                go.Scatter3d(
+                    x=[x],
+                    y=[y],
+                    z=[z],
+                    mode="markers+text",
+                    marker=dict(
+                        size=14 + min(count, 30) * 0.25,
+                        color="#FFFFFF",
+                        opacity=0.86 + 0.08 * np.sin(t + ci),
+                        line=dict(color="#8C8C8C", width=1),
+                    ),
+                    text=[category],
+                    textposition="top center",
+                    textfont=dict(color="#FFFFFF", size=10),
+                    hovertext=(
+                        f"カテゴリ: {category}<br>"
+                        f"SKU数: {count:,}<br>"
+                        f"推奨数量合計: {qty_sum:,}"
+                    ),
+                    hoverinfo="text",
+                    name=f"カテゴリ: {category}",
+                    showlegend=False,
+                )
+            )
+
+        pulse_alpha = 0.12 + 0.08 * abs(np.sin(t))
+
+        for ci, category in enumerate(categories):
+            x, y, z = category_points[ci]
+            traces.append(
+                go.Scatter3d(
+                    x=[0, x],
+                    y=[0, y],
+                    z=[0, z],
+                    mode="lines",
+                    line=dict(width=2, color=f"rgba(255,255,255,{pulse_alpha})"),
+                    hoverinfo="none",
+                    showlegend=False,
+                )
+            )
+
+        for idx, row in enumerate(df.itertuples(index=False)):
+            category = str(getattr(row, "カテゴリ"))
+            ci = category_index.get(category, 0)
+            cx, cy, cz = category_points[ci]
+            sx, sy, sz = sku_points[idx]
+
+            traces.append(
+                go.Scatter3d(
+                    x=[cx, sx],
+                    y=[cy, sy],
+                    z=[cz, sz],
+                    mode="lines",
+                    line=dict(width=1, color="rgba(255,255,255,0.055)"),
+                    hoverinfo="none",
+                    showlegend=False,
+                )
+            )
+
+        for status, color in STATUS_COLOR_MAP.items():
+            mask = df["visual_status"] == status
+            status_df = df[mask]
+
+            if status_df.empty:
+                continue
+
+            indices = np.where(mask.to_numpy())[0]
+            points = sku_points[indices]
+
+            hovertexts = []
+            for r in status_df.itertuples(index=False):
+                product_code = getattr(r, "商品コード", "")
+                category = getattr(r, "カテゴリ", "")
+                quantity = int(getattr(r, "推奨数量", 0))
+                evidence = getattr(r, "根拠レベル", "")
+                review_flag = getattr(r, "要確認", "")
+                memo = getattr(r, "異常メモ", "")
+                stock = getattr(r, "有効在庫", "")
+                demand = getattr(r, "予測6カ月需要", "")
+                safety = getattr(r, "安全在庫", "")
+                amount = getattr(r, "金額", "")
+
+                hovertexts.append(
+                    f"商品コード: {product_code}<br>"
+                    f"カテゴリ: {category}<br>"
+                    f"推奨数量: {quantity:,}<br>"
+                    f"根拠レベル: {evidence}<br>"
+                    f"状態: {status}<br>"
+                    f"要確認: {review_flag}<br>"
+                    f"予測6カ月需要: {demand}<br>"
+                    f"有効在庫: {stock}<br>"
+                    f"安全在庫: {safety}<br>"
+                    f"金額: {amount}<br>"
+                    f"メモ: {memo}"
+                )
+
+            size_wave = 1.0 + 0.10 * np.sin(t + phases[indices])
+            sizes = status_df["visual_size"].to_numpy() * size_wave
+
+            traces.append(
+                go.Scatter3d(
+                    x=points[:, 0],
+                    y=points[:, 1],
+                    z=points[:, 2],
+                    mode="markers",
+                    marker=dict(
+                        size=sizes,
+                        color=color,
+                        opacity=0.86 + 0.08 * abs(np.sin(t)),
+                        line=dict(color="rgba(255,255,255,0.50)", width=0.6),
+                    ),
+                    text=hovertexts,
+                    hoverinfo="text",
+                    name=status,
+                )
+            )
+
+        return traces
+
+    initial_data = make_frame_data(0)
+
+    for trace in initial_data:
+        fig.add_trace(trace)
+
+    frames = []
+    for frame_i in range(frame_count):
+        frames.append(
+            go.Frame(
+                data=make_frame_data(frame_i),
+                name=str(frame_i),
+            )
+        )
+
+    fig.frames = frames
 
     return fig, df
