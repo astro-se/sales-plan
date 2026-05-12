@@ -7,7 +7,7 @@ import streamlit as st
 
 from src.forecast import forecast
 from src.io import load_google_sheets, load_sample_data, read_csv_upload, to_csv_bytes
-from src.visualize import build_node_sphere_figure
+from src.visualize import build_animated_node_sphere_figure, build_node_sphere_figure
 
 
 st.set_page_config(page_title="Sales Plan | 需要予測見積", layout="wide")
@@ -171,14 +171,38 @@ with tab0:
             help="SKUが多い場合の描画負荷を抑えます。",
         )
 
-    fig, node_table = build_node_sphere_figure(
-        review=review,
-        output=output,
-        category_filter=selected_categories,
-        status_filter=selected_status,
-        quantity_min=int(quantity_min),
-        max_nodes=int(max_nodes),
+    visual_mode = st.radio(
+        "表示モード",
+        ["静的3D", "生体アニメーション3D"],
+        horizontal=True,
+        help="アニメーション版はノードが細胞のように呼吸・回遊します。",
     )
+
+    if visual_mode == "生体アニメーション3D":
+        st.caption(
+            "アニメーション版は描画負荷を抑えるため、表示ノード上限を最大240件に制限します。"
+            "Playボタンで細胞のような呼吸・回転・揺らぎを確認できます。"
+        )
+
+        fig, node_table = build_animated_node_sphere_figure(
+            review=review,
+            output=output,
+            category_filter=selected_categories,
+            status_filter=selected_status,
+            quantity_min=int(quantity_min),
+            max_nodes=min(int(max_nodes), 240),
+            frame_count=36,
+        )
+
+    else:
+        fig, node_table = build_node_sphere_figure(
+            review=review,
+            output=output,
+            category_filter=selected_categories,
+            status_filter=selected_status,
+            quantity_min=int(quantity_min),
+            max_nodes=int(max_nodes),
+        )
 
     st.plotly_chart(
         fig,
